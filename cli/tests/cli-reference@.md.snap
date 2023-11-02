@@ -163,6 +163,10 @@ repository.
   Possible values: `true`, `false`
 
 * `--config-toml <TOML>` — Additional configuration options (can be repeated)
+* `--show-heap-stats` — Show memory allocation statistics from the internal heap allocator on `stdout`, when the program exits
+
+  Possible values: `true`, `false`
+
 
 
 
