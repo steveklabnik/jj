@@ -27,6 +27,17 @@ use crate::settings::UserSettings;
 use crate::view::View;
 use crate::{dag_walk, op_store};
 
+/// An in-memory representation of a repo and any changes being made to it.
+///
+/// Within the scope of a transaction, changes to the repository are made
+/// in-memory to `mut_repo` and published to the repo backend when
+/// [`Transaction::commit`] is called. When a transaction is committed, it
+/// becomes atomically visible as an Operation in the op log that represents the
+/// transaction itself, and as a View that represents the state of the repo
+/// after the transaction. This is similar to how a Commit represents a change
+/// to the contents of the repository and a Tree represents the repository's
+/// contents after the change. See the documentation for [`op_store::Operation`]
+/// and [`op_store::View`] for more information.
 pub struct Transaction {
     mut_repo: MutableRepo,
     parent_ops: Vec<Operation>,
@@ -153,6 +164,13 @@ struct NewRepoData {
     index: Box<dyn ReadonlyIndex>,
 }
 
+/// An Operation which has been written to the operation store but not
+/// published. The repo can be loaded at an unpublished Operation, but the
+/// Operation will not be visible in the op log if the repo is loaded at head.
+///
+/// Either [`UnpublishedOperation::publish`] or
+/// [`UnpublishedOperation::leave_unpublished`] must be called to finish the
+/// operation.
 pub struct UnpublishedOperation {
     repo_loader: RepoLoader,
     data: Option<NewRepoData>,
