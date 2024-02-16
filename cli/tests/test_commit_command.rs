@@ -196,7 +196,75 @@ fn test_commit_paths_warning() {
     "###);
 }
 
+// TODO(emesterhazy): We need tests for overrides as well, and for scenarios
+// where multiple local branches point to @.
+#[test]
+fn test_commit_advance_branches() {
+    let test_env = TestEnvironment::default();
+    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "--colocate", "repo"]);
+    let workspace_path = test_env.env_root().join("repo");
+
+    // First, test with advance-branches enabled. Start by creating a branch on the
+    // root commit.
+    set_advance_branches(&test_env, &workspace_path, true);
+    test_env.jj_cmd_ok(&workspace_path, &["branch", "create", "-r", "@-", "foobar"]);
+
+    // Check the initial state of the repo.
+    insta::assert_snapshot!(get_log_output_with_branches(&test_env, &workspace_path), @r###"
+    @  230dd059e1b0 br:{} dsc:
+    ◉  000000000000 br:{foobar} dsc:
+    "###);
+
+    // Description applies to the current working-copy (not the new one)
+    test_env.jj_cmd_ok(&workspace_path, &["commit", "-m=first"]);
+    insta::assert_snapshot!(get_log_output_with_branches(&test_env, &workspace_path), @r###"
+    @  24bb7f9da598 br:{} dsc:
+    ◉  95f2456c4bbd br:{foobar} dsc: first
+    ◉  000000000000 br:{} dsc:
+    "###);
+
+    // Now disable advance-branches and commit again. This time the branch won't
+    // move.
+    set_advance_branches(&test_env, &workspace_path, false);
+    test_env.jj_cmd_ok(&workspace_path, &["commit", "-m=second"]);
+    insta::assert_snapshot!(get_log_output_with_branches(&test_env, &workspace_path), @r###"
+    @  b29edd893970 br:{} dsc:
+    ◉  ebf7d96fb6ad br:{} dsc: second
+    ◉  95f2456c4bbd br:{foobar} dsc: first
+    ◉  000000000000 br:{} dsc:
+    "###);
+
+    // The branch only moves if it's pointing to @ when you run `jj commit`.
+    set_advance_branches(&test_env, &workspace_path, true);
+    test_env.jj_cmd_ok(&workspace_path, &["commit", "-m=third"]);
+    insta::assert_snapshot!(get_log_output_with_branches(&test_env, &workspace_path), @r###"
+    @  d5cba24e5af5 br:{} dsc:
+    ◉  3952fe2412d9 br:{} dsc: third
+    ◉  ebf7d96fb6ad br:{} dsc: second
+    ◉  95f2456c4bbd br:{foobar} dsc: first
+    ◉  000000000000 br:{} dsc:
+    "###);
+}
+
 fn get_log_output(test_env: &TestEnvironment, cwd: &Path) -> String {
     let template = r#"commit_id.short() ++ " " ++ description"#;
     test_env.jj_cmd_success(cwd, &["log", "-T", template])
+}
+
+fn get_log_output_with_branches(test_env: &TestEnvironment, cwd: &Path) -> String {
+    let template = r#"commit_id.short() ++ " br:{" ++ local_branches ++ "} dsc: " ++ description"#;
+    test_env.jj_cmd_success(cwd, &["log", "-T", template])
+}
+
+fn set_advance_branches(test_env: &TestEnvironment, cwd: &Path, value: bool) -> String {
+    test_env.jj_cmd_success(
+        cwd,
+        &[
+            "config",
+            "set",
+            "--repo",
+            "advance-branches.enabled",
+            &format!("{}", value),
+        ],
+    )
 }

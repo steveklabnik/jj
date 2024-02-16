@@ -48,6 +48,8 @@ pub(crate) fn cmd_commit(
         .get_wc_commit_id()
         .ok_or_else(|| user_error("This command requires a working copy"))?;
     let commit = workspace_command.repo().store().get_commit(commit_id)?;
+    let advanceable_branch = workspace_command
+        .get_advanceable_branch(&**workspace_command.repo(), commit.parent_ids())?;
     let matcher = workspace_command.matcher_from_values(&args.paths)?;
     let mut tx = workspace_command.start_transaction();
     let base_tree = merge_commit_trees(tx.repo(), &commit.parents())?;
@@ -113,6 +115,12 @@ new working-copy commit.
                 commit.tree_id().clone(),
             )
             .write()?;
+
+        if let Some(branch) = advanceable_branch {
+            // Move the branch to the parent of the new commit.
+            tx.advance_branch(branch, new_commit.id());
+        }
+
         for workspace_id in workspace_ids {
             tx.mut_repo().edit(workspace_id, &new_wc_commit).unwrap();
         }
