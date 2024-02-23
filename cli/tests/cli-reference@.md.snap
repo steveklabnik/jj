@@ -34,6 +34,7 @@ This document contains the help content for the `jj` command-line program.
 * [`jj describe`↴](#jj-describe)
 * [`jj diff`↴](#jj-diff)
 * [`jj diffedit`↴](#jj-diffedit)
+* [`jj docs`↴](#jj-docs)
 * [`jj duplicate`↴](#jj-duplicate)
 * [`jj edit`↴](#jj-edit)
 * [`jj files`↴](#jj-files)
@@ -112,6 +113,7 @@ To get started, see the tutorial at https://github.com/martinvonz/jj/blob/main/d
 * `describe` — Update the change description or other metadata
 * `diff` — Compare file contents between two revisions
 * `diffedit` — Touch up the content changes in a revision with a diff editor
+* `docs` — 
 * `duplicate` — Create a new change with the same content as an existing one
 * `edit` — Edit a commit in the working copy
 * `files` — List files in a revision
@@ -677,6 +679,16 @@ See `jj restore` if you want to move entire files from one revision to another. 
 * `-r`, `--revision <REVISION>` — The revision to touch up. Defaults to @ if neither --to nor --from are specified
 * `--from <FROM>` — Show changes from this revision. Defaults to @ if --to is specified
 * `--to <TO>` — Edit changes in this revision. Defaults to @ if --from is specified
+
+
+
+## `jj docs`
+
+**Usage:** `jj docs [COMMAND]`
+
+###### **Arguments:**
+
+* `<COMMAND>` — The command to show documentation for
 
 
 
