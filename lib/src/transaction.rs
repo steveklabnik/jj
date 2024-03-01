@@ -156,7 +156,7 @@ struct NewRepoData {
 pub struct UnpublishedOperation {
     repo_loader: RepoLoader,
     data: Option<NewRepoData>,
-    closed: bool,
+    closed: MustClose,
 }
 
 impl UnpublishedOperation {
@@ -174,7 +174,7 @@ impl UnpublishedOperation {
         UnpublishedOperation {
             repo_loader,
             data,
-            closed: false,
+            closed: MustClose::new(),
         }
     }
 
@@ -193,7 +193,7 @@ impl UnpublishedOperation {
         let repo = self
             .repo_loader
             .create_from(data.operation, data.view, data.index);
-        self.closed = true;
+        self.closed.mark_closed();
         repo
     }
 
@@ -202,12 +202,30 @@ impl UnpublishedOperation {
         let repo = self
             .repo_loader
             .create_from(data.operation, data.view, data.index);
-        self.closed = true;
+        self.closed.mark_closed();
         repo
     }
 }
 
-impl Drop for UnpublishedOperation {
+// Used to ensure `UnpublishedOperation`s are either published or explicitly
+// left unpublished before they're dropped. Using a separate type to do this
+// instead of implementing `Drop` for `UnpublishedOperation` allows fields to be
+// moved from `UnpublishedOperation` without being wrapped in `std::Option`.
+struct MustClose {
+    closed: bool,
+}
+
+impl MustClose {
+    fn new() -> MustClose {
+        MustClose { closed: false }
+    }
+
+    fn mark_closed(&mut self) {
+        self.closed = true;
+    }
+}
+
+impl Drop for MustClose {
     fn drop(&mut self) {
         if !self.closed && !std::thread::panicking() {
             eprintln!("BUG: UnpublishedOperation was dropped without being closed.");
