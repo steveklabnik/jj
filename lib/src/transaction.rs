@@ -147,15 +147,9 @@ pub fn create_op_metadata(
     }
 }
 
-struct NewRepoData {
-    operation: Operation,
-    view: View,
-    index: Box<dyn ReadonlyIndex>,
-}
-
 pub struct UnpublishedOperation {
     repo_loader: RepoLoader,
-    data: NewRepoData,
+    repo: Arc<ReadonlyRepo>,
     closed: MustClose,
 }
 
@@ -166,42 +160,32 @@ impl UnpublishedOperation {
         view: View,
         index: Box<dyn ReadonlyIndex>,
     ) -> Self {
+        let repo = repo_loader.create_from(operation, view, index);
         UnpublishedOperation {
             repo_loader,
-            data: NewRepoData {
-                operation,
-                view,
-                index,
-            },
+            repo,
             closed: MustClose::new(),
         }
     }
 
     pub fn operation(&self) -> &Operation {
-        &self.data.operation
+        self.repo.operation()
     }
 
     pub fn publish(mut self) -> Arc<ReadonlyRepo> {
-        let data = self.data;
         {
             let _lock = self.repo_loader.op_heads_store().lock();
             self.repo_loader
                 .op_heads_store()
-                .update_op_heads(data.operation.parent_ids(), data.operation.id());
+                .update_op_heads(self.operation().parent_ids(), self.operation().id());
         }
-        let repo = self
-            .repo_loader
-            .create_from(data.operation, data.view, data.index);
         self.closed.mark_closed();
-        repo
+        self.repo
     }
 
     pub fn leave_unpublished(mut self) -> Arc<ReadonlyRepo> {
-        let repo =
-            self.repo_loader
-                .create_from(self.data.operation, self.data.view, self.data.index);
         self.closed.mark_closed();
-        repo
+        self.repo
     }
 }
 
