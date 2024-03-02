@@ -64,6 +64,12 @@ impl Hash for Commit {
     }
 }
 
+impl AsRef<Self> for Commit {
+    fn as_ref(&self) -> &Self {
+        self
+    }
+}
+
 impl Commit {
     pub fn new(store: Arc<Store>, id: CommitId, data: Arc<backend::Commit>) -> Self {
         Commit { store, id, data }

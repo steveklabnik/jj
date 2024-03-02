@@ -72,7 +72,13 @@ pub(crate) fn cmd_status(
                 formatter.labeled("conflict"),
                 "There are unresolved conflicts at these paths:"
             )?;
-            resolve::print_conflicted_paths(&conflicts, formatter, &workspace_command)?
+            resolve::print_conflicted_paths(&conflicts, formatter, &workspace_command)?;
+
+            crate::cli_util::print_conflict_resolution_hint(
+                formatter,
+                "To resolve the conflicts, start by updating the current change:",
+                &[wc_commit],
+            )?;
         }
 
         formatter.write_str("Working copy : ")?;
