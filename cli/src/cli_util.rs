@@ -1026,10 +1026,10 @@ impl WorkspaceCommandEnvironment {
     }
 }
 
-/// A token that holds a lock for git import/export operations in colocated
-/// repositories. For non-colocated repos, this is an empty token (no actual
-/// lock held). The lock is automatically released when this token is dropped.
-pub struct GitImportExportLock {
+/// A token that holds a lock for snapshot operations. This serializes
+/// concurrent snapshot operations across all workspaces to prevent divergent
+/// operations. The lock is automatically released when this token is dropped.
+pub struct SnapshotLock {
     _lock: Option<FileLock>,
 }
 
@@ -1119,20 +1119,16 @@ impl WorkspaceCommandHelper {
         }
     }
 
-    /// Acquires a lock for git import/export operations if the workspace is
-    /// colocated with Git. Returns a token that can be passed to functions
-    /// that need to import from or export to Git. For non-colocated repos,
-    /// returns a token with no lock inside.
-    fn lock_git_import_export(&self) -> Result<GitImportExportLock, CommandError> {
-        let lock = if self.working_copy_shared_with_git {
-            let lock_path = self.workspace.repo_path().join("git_import_export.lock");
-            Some(FileLock::lock(lock_path.clone()).map_err(|err| {
-                user_error_with_message("Failed to take lock for Git import/export", err)
-            })?)
-        } else {
-            None
-        };
-        Ok(GitImportExportLock { _lock: lock })
+    /// Acquires a lock for snapshot operations. This serializes concurrent
+    /// snapshot operations across all workspaces to prevent divergent
+    /// operations. Returns a token that can be passed to functions that need
+    /// to import from or export to Git.
+    fn lock_snapshot(&self) -> Result<SnapshotLock, CommandError> {
+        let lock_path = self.workspace.repo_path().join("snapshot.lock");
+        let lock = FileLock::lock(lock_path.clone()).map_err(|err| {
+            user_error_with_message("Failed to take snapshot lock", err)
+        })?;
+        Ok(SnapshotLock { _lock: Some(lock) })
     }
 
     /// Note that unless you have a good reason not to do so, you should always
@@ -1144,17 +1140,17 @@ impl WorkspaceCommandHelper {
             return Ok(SnapshotStats::default());
         }
 
-        // Acquire git import/export lock once for the entire import/snapshot/export
-        // cycle. This prevents races with other processes during Git HEAD and
-        // refs import/export.
+        // Acquire snapshot lock once for the entire import/snapshot/export
+        // cycle. This prevents races with other processes during snapshot
+        // operations, including Git HEAD and refs import/export.
         #[cfg_attr(not(feature = "git"), allow(unused_variables))]
-        let git_import_export_lock = self
-            .lock_git_import_export()
+        let snapshot_lock = self
+            .lock_snapshot()
             .map_err(snapshot_command_error)?;
 
         // Reload at current head to avoid creating divergent operations if another
         // process committed an operation while we were waiting for the lock.
-        if self.working_copy_shared_with_git {
+        {
             let repo = self.repo().clone();
             let op_heads_store = repo.loader().op_heads_store();
             let op_heads = op_heads_store
@@ -1174,7 +1170,7 @@ impl WorkspaceCommandHelper {
 
         #[cfg(feature = "git")]
         if self.working_copy_shared_with_git {
-            self.import_git_head(ui, &git_import_export_lock)
+            self.import_git_head(ui, &snapshot_lock)
                 .map_err(snapshot_command_error)?;
         }
         // Because the Git refs (except HEAD) aren't imported yet, the ref
@@ -1186,7 +1182,7 @@ impl WorkspaceCommandHelper {
         // import_git_refs() can rebase the working-copy commit.
         #[cfg(feature = "git")]
         if self.working_copy_shared_with_git {
-            self.import_git_refs(ui, &git_import_export_lock)
+            self.import_git_refs(ui, &snapshot_lock)
                 .map_err(snapshot_command_error)?;
         }
         Ok(stats)
@@ -1214,7 +1210,7 @@ impl WorkspaceCommandHelper {
     fn import_git_head(
         &mut self,
         ui: &Ui,
-        git_import_export_lock: &GitImportExportLock,
+        snapshot_lock: &SnapshotLock,
     ) -> Result<(), CommandError> {
         assert!(self.may_update_working_copy);
         let mut tx = self.start_transaction();
@@ -1250,7 +1246,7 @@ impl WorkspaceCommandHelper {
             }
         } else {
             // Unlikely, but the HEAD ref got deleted by git?
-            self.finish_transaction(ui, tx, "import git head", git_import_export_lock)?;
+            self.finish_transaction(ui, tx, "import git head", snapshot_lock)?;
         }
         Ok(())
     }
@@ -1268,7 +1264,7 @@ impl WorkspaceCommandHelper {
     fn import_git_refs(
         &mut self,
         ui: &Ui,
-        git_import_export_lock: &GitImportExportLock,
+        snapshot_lock: &SnapshotLock,
     ) -> Result<(), CommandError> {
         use jj_lib::git;
         let git_settings = git::GitSettings::from_settings(self.settings())?;
@@ -1291,7 +1287,7 @@ impl WorkspaceCommandHelper {
                 "Rebased {num_rebased} descendant commits off of commits rewritten from git"
             )?;
         }
-        self.finish_transaction(ui, tx, "import git refs", git_import_export_lock)?;
+        self.finish_transaction(ui, tx, "import git refs", snapshot_lock)?;
         writeln!(
             ui.status(),
             "Done importing changes from the underlying Git repo."
@@ -2046,7 +2042,7 @@ to the current parents may contain changes from multiple commits.
         ui: &Ui,
         mut tx: Transaction,
         description: impl Into<String>,
-        _git_import_export_lock: &GitImportExportLock,
+        _snapshot_lock: &SnapshotLock,
     ) -> Result<(), CommandError> {
         let num_rebased = tx.repo_mut().rebase_descendants()?;
         if num_rebased > 0 {
@@ -2512,11 +2508,11 @@ impl WorkspaceCommandTransaction<'_> {
             writeln!(ui.status(), "Nothing changed.")?;
             return Ok(());
         }
-        // Acquire git import/export lock before finishing the transaction to ensure
+        // Acquire snapshot lock before finishing the transaction to ensure
         // Git HEAD export happens atomically with the transaction commit.
-        let git_import_export_lock = self.helper.lock_git_import_export()?;
+        let snapshot_lock = self.helper.lock_snapshot()?;
         self.helper
-            .finish_transaction(ui, self.tx, description, &git_import_export_lock)
+            .finish_transaction(ui, self.tx, description, &snapshot_lock)
     }
 
     /// Returns the wrapped [`Transaction`] for circumstances where
