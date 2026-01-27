@@ -1,0 +1,142 @@
+Investigation: GitHub Issue #7538 - Stale Working Copy Race Condition
+=====================================================================
+
+Timeline of Feature Introduction
+--------------------------------
+
+Nov 2021 - 0098edd3d - Multiple workspace infrastructure (PR #13)
+    Created the foundation for concurrent workspace operations by adding
+    support for tracking multiple workspaces in the OpStore.
+
+Feb 2022 - 5da9e600f - `workspace add` command
+    Made multiple workspaces user-accessible. This is when the race
+    condition became theoretically possible, though unlikely without
+    automation.
+
+Oct 2022 - a0573b173 - `workspace update-stale` command
+    Added mechanism to recover from stale working copy state. However,
+    this command itself can create divergent operations when it snapshots
+    at the old operation.
+
+Jul 2023 - ef83f2bee - Watchman filesystem monitor
+    Added fast filesystem change detection via watchman integration.
+
+Jun 2024 - 8aa71f58f - Watchman snapshot trigger
+    CRITICAL: This dramatically increased the likelihood of the race
+    condition by enabling automatic background snapshots. When
+    `core.watchman.register_snapshot_trigger = true`, watchman runs
+    `jj debug snapshot` automatically whenever files change.
+
+Oct 2025 - e07e5d9bc - Git HEAD race condition fix (v1)
+    Added working copy lock acquisition before reading/writing Git HEAD.
+
+Nov 2025 - 7a296ca1f - Git HEAD race condition fix (v2)
+    Introduced dedicated `.jj/repo/git_import_export.lock` file to
+    serialize Git HEAD and refs import/export operations. After acquiring
+    the lock, reloads the repo at current head to avoid stale state.
+
+
+When Was the Problem Introduced?
+--------------------------------
+
+The race condition was LATENT from February 2022 (when `workspace add`
+was added), but became a significant user-facing problem in June 2024
+when the watchman snapshot trigger feature was added.
+
+The trigger feature causes watchman to automatically run `jj debug
+snapshot` whenever files change. This dramatically increases the
+frequency of concurrent snapshot operations, making the race condition
+much more likely to manifest.
+
+
+Root Cause
+----------
+
+Each workspace has its own working copy lock (in `.jj/working_copy/`),
+but there is no repo-level coordination for snapshot transactions.
+
+This means:
+1. Two workspaces can both acquire their respective working copy locks
+   simultaneously
+2. Both can create snapshot operations with the same parent operation
+3. This creates divergent operation heads that require reconciliation
+4. Users see "The working copy is stale" errors and divergent commits
+
+
+The Race Condition Sequence
+---------------------------
+
+1. Process A (e.g., watchman trigger) loads workspace at operation X
+2. Process B (e.g., user command or another trigger) loads at operation X
+3. Process A acquires its working copy lock, snapshots, creates op Y
+4. Process B acquires its working copy lock, snapshots, creates op Z
+5. Both Y and Z have the same parent X -> divergent operations
+6. Next command sees divergent ops and must reconcile them
+7. After reconciliation, one workspace appears "stale"
+
+
+Existing Fix Pattern
+--------------------
+
+The Git HEAD race condition fix (7a296ca1f) provides a template:
+
+1. Dedicated lock file: `.jj/repo/git_import_export.lock` serializes
+   Git operations across all processes
+
+2. Reload after lock: After acquiring the lock, reload the repo at
+   the current operation head to avoid creating operations based on
+   stale state
+
+A similar approach could fix the workspace race condition:
+- Add a repo-level snapshot coordination lock
+- Or extend the existing working copy lock to cover the entire
+  snapshot transaction including operation commit
+- Or check/reload operation state after acquiring all locks
+
+
+Key Code Locations
+------------------
+
+cli/src/cli_util.rs
+    - maybe_snapshot_impl() at ~line 1127 - main snapshot entry point
+    - finish_transaction() at ~line 2099 - transaction commit
+    - lock_git_import_export() - example of dedicated lock pattern
+
+lib/src/local_working_copy.rs
+    - start_mutation() at ~line 2564 - working copy lock acquisition
+
+lib/src/simple_op_heads_store.rs
+    - Lines 85-87 comment acknowledges divergence can happen on
+      distributed filesystems
+
+lib/src/working_copy.rs
+    - WorkingCopyFreshness::check_stale() - staleness detection
+
+
+Potential Solutions
+-------------------
+
+1. Add repo-level lock for snapshot operations
+   Prevent concurrent snapshot transactions from racing.
+
+2. Check for stale repo after acquiring ALL locks
+   Re-check operation heads after acquiring working copy lock and
+   abort/retry if diverged.
+
+3. Debounce watchman triggers
+   Add delay before triggering snapshots to coalesce rapid changes.
+
+4. Skip snapshot if already up-to-date
+   Before creating new operation, check if working copy tree matches.
+
+5. Extend op_head check to all repos
+   Currently only colocated repos get the concurrent operation check
+   in maybe_snapshot_impl().
+
+
+References
+----------
+
+GitHub Issue: #7538
+Test reproducer: cli/tests/test_concurrent_operations.rs
+    test_concurrent_workspaces_stale_working_copy()
