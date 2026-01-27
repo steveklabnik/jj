@@ -357,6 +357,127 @@ fn test_git_head_race_condition() {
     );
 }
 
+#[test]
+fn test_concurrent_workspaces_stale_working_copy() {
+    // Test that concurrent operations in different workspaces can create
+    // the "stale working copy" condition reported in issue #7538.
+    //
+    // This test demonstrates that when two workspaces both run commands
+    // concurrently, they can create divergent operations because each
+    // workspace has its own working copy lock, allowing them to snapshot
+    // in parallel.
+
+    let test_env = TestEnvironment::default();
+    test_env.run_jj_in(".", ["git", "init", "main"]).success();
+    let main_dir = test_env.work_dir("main");
+    let secondary_dir = test_env.work_dir("secondary");
+
+    // Create initial content
+    main_dir.write_file("file", "initial\n");
+    main_dir.run_jj(["commit", "-m", "initial"]).success();
+
+    // Create secondary workspace
+    main_dir
+        .run_jj(["workspace", "add", "../secondary"])
+        .success();
+
+    // Extract environment for spawned processes
+    let base_cmd = test_env.new_jj_cmd();
+    let jj_bin = base_cmd.get_program().to_owned();
+    let base_env: Vec<_> = base_cmd
+        .get_envs()
+        .filter_map(|(k, v)| v.map(|v| (k.to_owned(), v.to_owned())))
+        .filter(|(k, _)| k != "JJ_TIMESTAMP" && k != "JJ_OP_TIMESTAMP" && k != "JJ_RANDOMNESS_SEED")
+        .collect();
+
+    let main_path = main_dir.root().to_owned();
+    let secondary_path = secondary_dir.root().to_owned();
+    let duration = std::time::Duration::from_secs(3);
+    let start = std::time::Instant::now();
+
+    let stale_errors = std::sync::atomic::AtomicUsize::new(0);
+    let concurrent_detected = std::sync::atomic::AtomicUsize::new(0);
+
+    std::thread::scope(|s| {
+        // Thread 1: Run commands in main workspace with file modifications
+        s.spawn(|| {
+            let mut i = 0;
+            while start.elapsed() < duration {
+                // Modify file and run snapshot
+                std::fs::write(main_path.join("file"), format!("main {i}\n")).ok();
+
+                let mut cmd = std::process::Command::new(&jj_bin);
+                cmd.current_dir(&main_path);
+                cmd.args(["debug", "snapshot"]);
+                for (key, value) in &base_env {
+                    cmd.env(key, value);
+                }
+                let output = cmd.output().expect("Failed to spawn jj");
+
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if stderr.contains("stale") {
+                    stale_errors.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                if stderr.contains("Concurrent modification") {
+                    concurrent_detected.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                i += 1;
+            }
+        });
+
+        // Thread 2: Run commands in secondary workspace with file modifications
+        s.spawn(|| {
+            let mut i = 0;
+            while start.elapsed() < duration {
+                // Modify file and run snapshot
+                std::fs::write(secondary_path.join("file"), format!("secondary {i}\n")).ok();
+
+                let mut cmd = std::process::Command::new(&jj_bin);
+                cmd.current_dir(&secondary_path);
+                cmd.args(["debug", "snapshot"]);
+                for (key, value) in &base_env {
+                    cmd.env(key, value);
+                }
+                let output = cmd.output().expect("Failed to spawn jj");
+
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if stderr.contains("stale") {
+                    stale_errors.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                if stderr.contains("Concurrent modification") {
+                    concurrent_detected.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                i += 1;
+            }
+        });
+    });
+
+    let stale_count = stale_errors.load(std::sync::atomic::Ordering::Relaxed);
+    let concurrent_count = concurrent_detected.load(std::sync::atomic::Ordering::Relaxed);
+
+    // Check for divergent operations in op log
+    let output = main_dir.run_jj(["op", "log", "-T", "description"]);
+    let reconcile_count = output
+        .stdout
+        .raw()
+        .lines()
+        .filter(|line| line.contains("reconcile divergent"))
+        .count();
+
+    eprintln!("Results:");
+    eprintln!("  Stale working copy errors: {stale_count}");
+    eprintln!("  Concurrent modification messages: {concurrent_count}");
+    eprintln!("  Divergent operation reconciliations: {reconcile_count}");
+
+    // After fix: concurrent operations should be serialized, no divergence
+    assert_eq!(
+        (stale_count, concurrent_count, reconcile_count),
+        (0, 0, 0),
+        "Race condition still present: {} stale, {} concurrent, {} reconciliations",
+        stale_count, concurrent_count, reconcile_count
+    );
+}
+
 #[must_use]
 fn get_log_output(work_dir: &TestWorkDir) -> CommandOutput {
     work_dir.run_jj(["log", "-T", "description"])
