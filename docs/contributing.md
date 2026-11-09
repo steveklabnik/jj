@@ -573,6 +573,29 @@ this can be done with:
     If you want to preserve some of the changes you made, you can do `jj bookmark
     set my-changes -r gh-pages` BEFORE running the above commands.
 
+### Documentation publication cadence
+
+The upstream `website` workflow publishes a prerelease snapshot every Monday
+at 08:23 UTC, rather than on every push to `main`. Maintainers can use
+**Run workflow** on the default branch for an earlier update. Scheduled runs
+may be delayed by GitHub. Published releases, including patch releases, still
+update the versioned docs and `latest` immediately via the release workflow.
+
+MkDocs and the experimental Starlight comparison site are prepared locally and
+published with one `gh-pages` push. If Starlight fails, the previous comparison
+site is retained, MkDocs can still be published, and the workflow reports the
+failure. Identical output is not pushed, even if the build created empty commits.
+A full source checkout keeps the sitemap timestamp tied to documentation changes.
+
+The publication helper can be tested without network access:
+
+```shell
+python3 .github/scripts/test-docs-publish.py
+```
+
+A concurrent release can cause the final push to be rejected rather than
+overwriting newer docs. Rerun the website workflow in that case.
+
 ### Explanation of the `docs-build-deploy` script
 
 The script sets up a few environment variables and invokes `uv run mike deploy`

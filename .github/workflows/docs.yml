@@ -1,29 +1,30 @@
 name: website
 
 on:
-  push:
-    branches:
-      - main
+  schedule:
+    # Prerelease docs are a weekly snapshot; releases still publish immediately.
+    - cron: '23 8 * * 1'
+  workflow_dispatch:
 
 permissions: {}
 
 jobs:
   prerelease-docs-build-deploy:
-    # IMPORTANT: this workflow also functions as a test for `docs-deploy-website-latest-release` in
-    # releases.yml. Any fixes here should probably be duplicated there.
     permissions:
       contents: write
     if: github.repository_owner == 'jj-vcs' # Stops this job from running on forks
-    strategy:
-      matrix:
-        os: [ubuntu-24.04]
-    runs-on: ${{ matrix.os }}
+    concurrency:
+      group: prerelease-docs
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           # `.github/scripts/docs-build-deploy` will need to `git push` to the docs branch
           persist-credentials: true
+          # SOURCE_DATE_EPOCH needs the last docs change, not the latest commit.
+          fetch-depth: 0
       - run:  "git fetch origin gh-pages --depth=1"
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
         with:
@@ -32,46 +33,39 @@ jobs:
         uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b
         with:
           version: "0.5.1"
-      - name: Install dependencies, compile and deploy docs
+      - name: Install dependencies and compile MkDocs
         run: |
           git config user.name 'jj-docs[bot]'
           git config user.email 'jj-docs[bot]@users.noreply.github.io'
           export MKDOCS_SITE_NAME="Jujutsu docs (prerelease)"
           export MKDOCS_PRIMARY_COLOR="blue grey"
-          .github/scripts/docs-build-deploy prerelease --push
-      - name: "Show `git diff --stat`"
-        run: git diff --stat gh-pages^ gh-pages || echo "(No diffs)"
-
-  starlight-docs-build-deploy:
-    # Deploy Starlight-based docs to /starlight for comparison with MkDocs version
-    needs: prerelease-docs-build-deploy
-    permissions:
-      contents: write
-    if: github.repository_owner == 'jj-vcs' # Stops this job from running on forks
-    runs-on: ubuntu-24.04
-
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-        with:
-          persist-credentials: true
-      - run: "git fetch origin gh-pages --depth=1"
+          .github/scripts/docs-build-deploy prerelease
       - name: Setup Node.js
+        id: node
+        continue-on-error: true
         uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238
         with:
           node-version: '22'
-      - name: Install dependencies
-        working-directory: web/docs
-        run: npm ci
       - name: Build Starlight docs
+        id: starlight
+        if: steps.node.outcome == 'success'
+        # Keep publishing MkDocs if the experimental comparison site is broken.
+        continue-on-error: true
         working-directory: web/docs
-        run: npm run build -- --base /starlight/
-      - name: Deploy to gh-pages/starlight
         run: |
-          git config user.name 'jj-docs[bot]'
-          git config user.email 'jj-docs[bot]@users.noreply.github.io'
-          git checkout gh-pages
-          rm -rf starlight
-          mv web/docs/dist starlight
-          git add starlight
-          git commit -m "Deploy Starlight docs to /starlight" || echo "No changes to commit"
-          git push origin gh-pages
+          npm ci
+          npm run build -- --base /starlight/
+      - name: Publish docs once
+        env:
+          STARLIGHT_OUTCOME: ${{ steps.starlight.outcome }}
+        run: |
+          if [ "$STARLIGHT_OUTCOME" = success ]; then
+            .github/scripts/docs-publish web/docs/dist
+          else
+            .github/scripts/docs-publish
+          fi
+      - name: Report Starlight failure
+        if: steps.node.outcome != 'success' || steps.starlight.outcome != 'success'
+        run: |
+          echo "::error::MkDocs publication completed; Starlight setup or build failed, so its previous published version was retained."
+          exit 1

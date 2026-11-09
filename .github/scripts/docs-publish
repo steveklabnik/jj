@@ -1,0 +1,33 @@
+#!/bin/sh
+# Publish locally prepared gh-pages changes only when their content changed.
+# Optionally replace the experimental Starlight site with a successful build.
+set -eu
+
+if [ "$#" -gt 1 ]; then
+    echo "usage: $0 [starlight-build-directory]" >&2
+    exit 2
+fi
+
+if [ "$#" -eq 1 ]; then
+    # Resolve before entering the publication worktree.
+    build_dir=$(cd "$1" && pwd)
+    worktree=$(mktemp -d)
+    trap 'git worktree remove --force "$worktree"; rmdir "$worktree" 2>/dev/null || true' EXIT
+    git worktree add "$worktree" gh-pages
+    rm -rf "$worktree/starlight"
+    cp -R "$build_dir" "$worktree/starlight"
+    git -C "$worktree" add starlight
+    if ! git -C "$worktree" diff --cached --quiet; then
+        git -C "$worktree" commit -m "Deploy Starlight docs to /starlight"
+    fi
+fi
+
+# mike may create a new commit even when the output is identical. Comparing
+# trees avoids a production deployment for empty commits too.
+if git diff --quiet origin/gh-pages gh-pages --; then
+    echo "Published docs are unchanged; skipping push."
+else
+    git diff --stat origin/gh-pages gh-pages --
+    # Never force: a concurrent release must not be overwritten.
+    git push origin gh-pages
+fi
